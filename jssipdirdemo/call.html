@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>JsSIP + WebRTC + freeSWITCH</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="Author" content="foruok" />
+    <meta name="description" content="JsSIP based example web application." />
+    <script src="./jssip.js" type="text/javascript"></script>
+    <script src="./CodecsHandler.js" type="text/javascript"></script>
+    <style type="text/css">
+    </style>
+</head>
+
+
+<body>
+
+    <div id="login-page"
+        style="width: 424px; height: 260px; background-color: #f2f4f4; border: 1px solid grey; padding-top: 4px">
+        <table border="0" frame="void" width="418px">
+            <tr>
+                <td class="td_label" width="160px" align="right"><label for="sip_uri">SIP URI:</label></td>
+                <td width="258px"><input style="width:250px" id="sip_uri" type="text"
+                        placeholder="sip:1000@10.0.0.0.com" value="sip:1000@11.0.93.25" /></td>
+            </tr>
+            <tr>
+                <td class="td_label" align="right"><label for="sip_password">SIP Password:</label></td>
+                <td><input style="width:250px" id="sip_password" type="password" placeholder="SIP password"
+                        value="666666" /></td>
+            </tr>
+            <tr>
+                <td class="td_label" align="right"><label for="ws_uri">WSS URI:</label></td>
+                <td><input style="width:250px" id="ws_uri" class="last unset" type="text"
+                        placeholder="WSS URI (wss://example.com)" value="wss://11.0.93.25:7443" /></td>
+            </tr>
+            <tr>
+                <td class="td_label" align="right"><label class="input_label" for="sip_phone_number">SIP Phone
+                        Info:</label></td>
+                <td><input style="width:250px" id="sip_phone_number" type="text" placeholder="sip:1001@10.0.0.0:5060"
+                        value="sip:1001@11.0.93.25"></td>
+            </tr>
+            <tr>
+                <td colspan="2" align="center"><button onclick="testStart()" style="background-color: rgb(42, 171, 210)"> Initialize </button></td>
+            </tr>
+            <tr>
+                <td colspan="2" align="center">
+                    <button onclick="testCall()"  style="background-color: rgb(42, 171, 210)"> Call </button>
+                    <button onclick="answerCall()" id="answerBtn" style="background-color: rgb(42, 171, 210)"> Answer </button>
+                    <button onclick="hangUp()" style="background-color: rgb(42, 171, 210)"> Hangup </button>
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2" align="center"><button onclick="captureLocalMedia()" style="background-color: rgb(42, 171, 210)"> Capture Local Media</button></td>
+            </tr>
+        </table>
+    </div>
+
+    <div
+        style="width: 424px; height: 324px;background-color: #333333; border: 2px solid blue; padding:0px; margin-top: 4px;">
+        <!-- <video id="video" width="420px" height="320px" autoplay></video> -->
+        <audio id="audio" controls></audio>
+    </div>
+
+</body>
+<script type="text/javascript">
+    var outgoingSession = null;
+    var incomingSession = null;
+    var currentSession = null;
+
+    var constraints = {
+        audio: true,
+        video: true,
+        mandatory: {
+            maxWidth: 640,
+            maxHeight: 360
+        }
+    };
+    URL = window.URL || window.webkitURL;
+
+    var localStream = null;
+    var userAgent = null;
+
+    function gotLocalMedia(stream) {
+        var audio = document.getElementById('audio');
+        console.info('Received local media stream');
+        localStream = stream;
+        audio.src = URL.createObjectURL(stream);
+    }
+
+    function captureLocalMedia() {
+        console.info('Requesting local video & audio');
+        navigator.webkitGetUserMedia(constraints, gotLocalMedia, function (e) {
+            alert('getUserMedia() error: ' + e.name);
+        });
+    }
+
+    function testStart() {
+
+        var sip_uri_ = document.getElementById("sip_uri").value.toString();
+        var sip_password_ = document.getElementById("sip_password").value.toString();
+        var ws_uri_ = document.getElementById("ws_uri").value.toString();
+
+        console.info("get input info: sip_uri = ", sip_uri_, " sip_password = ", sip_password_, " ws_uri = ", ws_uri_);
+
+        var socket = new JsSIP.WebSocketInterface(ws_uri_);
+        var configuration = {
+            sockets: [socket],
+            outbound_proxy_set: ws_uri_,
+            contact_uri: sip_uri_ + ';transport=WSS',
+            uri: sip_uri_,//与用户代理关联的SIP URI（字符串）。这是您的提供商提供给您的SIP地址
+            password: sip_password_,//SIP身份验证密码
+            register: true,//指示启动时JsSIP用户代理是否应自动注册
+            session_timers: false//启用会话计时器（根据RFC 4028）
+        };
+
+        userAgent = new JsSIP.UA(configuration);
+
+        //成功注册成功,data:Response JsSIP.IncomingResponse收到的SIP 2XX响应的实例
+        userAgent.on('registered', function (data) {
+            console.info("registered: ", data.response.status_code, ",", data.response.reason_phrase);
+        });
+        //由于注册失败而被解雇,data:Response JsSIP.IncomingResponse接收到的SIP否定响应的实例，如果失败是由这样的响应的接收产生的，否则为空
+        userAgent.on('registrationFailed', function (data) {
+            console.log("registrationFailed, ", data);
+            //console.warn("registrationFailed, ", data.response.status_code, ",", data.response.reason_phrase, " cause - ", data.cause);
+        });
+
+        //1.在注册到期之前发射几秒钟。如果应用程序没有为这个事件设置任何监听器，JsSIP将像往常一样重新注册。
+        // 2.如果应用程序订阅了这个事件，它负责ua.register()在registrationExpiring事件中调用（否则注册将过期）。
+        // 3.此事件使应用程序有机会在重新注册之前执行异步操作。对于那些在REGISTER请求中的自定义SIP头中使用外部获得的“令牌”的环境很有用。
+        userAgent.on('registrationExpiring', function () {
+            console.warn("registrationExpiring");
+        });
+
+        //为传入或传出会话/呼叫激发。data:
+        //     originator：'remote',新消息由远程对等方生成；'local',新消息由本地用户生成。
+        //      session:JsSIP.RTCSession 实例。
+        //      request:JsSIP.IncomingRequest收到的MESSAGE请求的实例；JsSIP.OutgoingRequest传出MESSAGE请求的实例
+        userAgent.on('newRTCSession', function (data) {
+            console.info('onNewRTCSession: ', data);
+            if (data.originator == 'remote') { //incoming call
+                console.info("incomingSession, answer the call");
+                setBeCallingStatus();
+                incomingSession = data.session;
+
+            } else {
+                console.info("outgoingSession");
+                outgoingSession = data.session;
+                outgoingSession.on('connecting', function (data) {
+                    console.info('onConnecting - ', data.request);
+                    currentSession = outgoingSession;
+                    outgoingSession = null;
+                });
+            }
+            //接受呼叫时激发
+            data.session.on('accepted', function (data) {
+                console.info('onAccepted - ', data);
+                if (data.originator == 'remote' && currentSession == null) {
+                    currentSession = incomingSession;
+                    incomingSession = null;
+                    console.info("setCurrentSession - ", currentSession);
+                }
+            });
+            //确认呼叫后激发
+            data.session.on('confirmed', function (c_data) {
+                console.info('onConfirmed - ', c_data);
+                alert("通话已经建立");
+                if (c_data.originator == 'remote' && currentSession == null) {
+                    currentSession = incomingSession;
+                    incomingSession = null;
+                    console.info("setCurrentSession - ", currentSession);
+                }
+
+                const stream = new MediaStream();
+                const receivers = data.session.connection?.getReceivers();
+                if (receivers) {
+                    receivers.forEach((receiver) => stream.addTrack(receiver.track));
+                }
+                var audio = document.getElementById('audio');
+                audio.srcObject = stream;
+                audio.play();
+            });
+            //在将远程SDP传递到RTC引擎之前以及在发送本地SDP之前激发。此事件提供了修改传入和传出SDP的机制。
+            data.session.on('sdp', function (data) {
+                console.info('onSDP, type - ', data.type, ' sdp - ', data.sdp);
+                // data.sdp = preferCodec(data.sdp, 'PCMU', true);
+                // console.info('onSDP, changed sdp - ', data.sdp);
+            });
+            //接收或生成对邀请请求的1XX SIP类响应（>100）时激发。该事件在SDP处理之前触发（如果存在），以便在需要时对其进行微调，甚至通过删除数据对象中响应参数的主体来删除它
+            data.session.on('progress', function (data) {
+                console.info('onProgress - ', data.originator);
+                if (data.originator == 'remote') {
+                    console.info('onProgress, response - ', data.response);
+                }
+            });
+            //创建基础RTCPeerConnection后激发。应用程序有机会通过在peerconnection上添加RTCDataChannel或设置相应的事件侦听器来更改peerconnection。
+            // data.session.on('peerconnection', function (data) {
+            //     console.info('onPeerconnection - ', data.peerconnection);
+                // data.peerconnection.onaddstream = function (ev) {
+                //     console.info('onaddstream from remote - ', ev);
+                //     var audio = document.getElementById('audio');
+                //     audio.src = URL.createObjectURL(ev.stream);
+                //     audio.onloadstart = () => {
+                //         audio.play();
+                //     };
+                //     audio.onerror = () => {
+                //         alert('录音加载失败...');
+                //     };
+                // };
+            // });
+            data.session.on("failed",function (data) {
+                console.log("failed");
+                incomingSession=null;
+                //远端呼叫取消
+                if(data.cause==='Canceled'&&data.originator==='remote'){
+                    //主叫取消呼叫
+                    alert("对端已经取消呼叫");
+                    resetAnswerBtn();
+                }else if(data.cause==='Rejected'&&data.originator==='remote'){
+                    alert("对端拒接接听");
+                }
+            })
+        });
+        //为传入或传出消息请求激发。data:
+        //     originator：'remote',新消息由远程对等方生成；'local',新消息由本地用户生成。
+        //      message:JsSIP.Message 实例。
+        //      request:JsSIP.IncomingRequest收到的MESSAGE请求的实例；JsSIP.OutgoingRequest传出MESSAGE请求的实例
+        userAgent.on('newMessage', function (data) {
+            if (data.originator == 'local') {
+                console.info('onNewMessage , OutgoingRequest - ', data.request);
+            } else {
+                console.info('onNewMessage , IncomingRequest - ', data.request);
+            }
+        });
+
+        console.info("call register");
+        //连接到信令服务器，并恢复以前的状态，如果以前停止。重新开始时，如果UA配置中的参数设置为register:true，则向SIP域注册。
+        userAgent.start();
+    }
+
+    // Register callbacks to desired call events
+    var eventHandlers = {
+        'progress': function (e) {
+            console.log('call is in progress');
+        },
+        'failed': function (e) {
+            console.log('call failed: ', e);
+        },
+        'ended': function (e) {
+            incomingSession=null;
+            console.log('call ended : ', e);
+            alert("通话已经结束");
+        },
+        'confirmed': function (e) {
+            console.log('call confirmed');
+        },
+        'cancel':function (e) {
+            console.log('call cancel');
+        }
+    };
+
+    function testCall() {
+        var sip_phone_number_ = document.getElementById("sip_phone_number").value.toString();
+
+        var options = {
+            'eventHandlers': eventHandlers,
+            'mediaConstraints': {
+                'audio': true, 'video': false,
+            },
+            //'mediaStream': localStream
+        };
+
+        //outgoingSession = userAgent.call('sip:3000@192.168.40.96:5060', options);
+        /*
+               * 拨打多媒体电话。不需要自己调用 getUserMedia 来捕获音视频了， JsSIP 会根据你传给JsSIP.UA.call方法的参数来自己调用
+
+                   参数
+
+                   Target 通话的目的地。String表示目标用户名或完整的SIP URI或JsSIP.URI实例。
+
+                   Options 可选Object附加参数（见下文）。
+                       options对象中的字段；
+                       mediaConstraints Object有两个有效的字段（audio和video）指示会话是否打算使用音频和/或视频以及要使用的约束。默认值是audio并且video设置为true。
+                       mediaStream MediaStream 传送到另一端。
+                       eventHandlers Object事件处理程序的可选项将被注册到每个呼叫事件。为每个要通知的事件定义事件处理程序。
+                   */
+        outgoingSession = userAgent.call(sip_phone_number_, options);
+    }
+
+    function answerCall() {
+        if(incomingSession){
+
+            resetAnswerBtn();
+            incomingSession.answer({'mediaConstraints' : { 'audio': true, 'video': true },
+                // 'mediaStream': localStream
+            });
+        }
+    }
+
+    //接听后重置answer 按钮状态
+    function resetAnswerBtn(){
+        if(callingInterval)clearInterval(callingInterval);
+        var answerBtn=document.querySelector("#answerBtn");
+        var bg="rgb(42, 171, 210)";
+        answerBtn.setAttribute('style', `background-color: ${bg} !important`);
+    }
+
+    //有新来电 answer 按钮颜色闪烁
+    function setBeCallingStatus(){
+        callingInterval=setInterval(()=>{
+            var answerBtn=document.querySelector("#answerBtn");
+            var bg=getComputedStyle(answerBtn, null).getPropertyValue('background-color');
+            var bg=bg==="rgb(255, 0, 0)"?"rgb(42, 171, 210)":"rgb(255, 0, 0)";
+            answerBtn.setAttribute('style', `background-color: ${bg} !important`);
+        },500);
+    }
+
+    //挂断和拒绝接听
+    function hangUp() {
+        //拒接来电
+        if(incomingSession){
+            resetAnswerBtn();
+            incomingSession.terminate();
+            incomingSession=null;
+            return;
+        }
+        //挂断当前通话
+        if (currentSession &&currentSession.isEnded() === false) {
+            currentSession.terminate();
+        }
+        currentSession = null;
+    }
+</script>
+
+</html>
